@@ -1,0 +1,24 @@
+# Node backend
+node_modules/
+dist/
+.env
+
+# Playwright/debug artifacts
+debug-screenshot.png
+debug-page.html
+
+# Prisma
+/prisma/migrations/dev.db*
+
+# Laravel frontend
+/vendor/
+.env
+.phpunit.cache
+/public/hot
+/public/storage
+/storage/*.key
+/.phpunit.result.cache
+
+# OS/editor
+.DS_Store
+*.log

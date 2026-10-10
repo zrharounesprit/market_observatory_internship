@@ -1,0 +1,123 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Source {
+  AUTOMOBILE_TN
+  TAYARA
+  DEALERSHIP
+}
+
+enum FuelType {
+  PETROL
+  DIESEL
+  HYBRID
+  ELECTRIC
+  UNKNOWN
+}
+
+enum Transmission {
+  MANUAL
+  AUTOMATIC
+  UNKNOWN
+}
+
+model Brand {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  models   Model[]
+  listings Listing[]
+
+  @@index([name])
+}
+
+model Model {
+  id       String    @id @default(cuid())
+  name     String
+  brandId  String
+  brand    Brand     @relation(fields: [brandId], references: [id])
+  listings Listing[]
+
+  @@unique([brandId, name])
+}
+
+model Dealership {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  url      String?
+  listings Listing[]
+}
+
+// One row per unique listing seen on a source. Price changes are tracked
+// separately in PriceHistory so trend analysis doesn't need to diff snapshots.
+model Listing {
+  id            String        @id @default(cuid())
+  source        Source
+  sourceId      String // id/slug of the listing on the source site
+  url           String
+
+  brandRaw      String // brand as scraped, before normalization
+  modelRaw      String
+  brandId       String?
+  modelId       String?
+  brand         Brand?        @relation(fields: [brandId], references: [id])
+  model         Model?        @relation(fields: [modelId], references: [id])
+
+  year          Int?
+  mileageKm     Int?
+  fuelType      FuelType      @default(UNKNOWN)
+  transmission  Transmission  @default(UNKNOWN)
+  currentPrice  Decimal       @db.Decimal(12, 2)
+  currency      String        @default("TND")
+  location      String?
+  imageURL      String?
+
+  dealershipId  String?
+  dealership    Dealership?   @relation(fields: [dealershipId], references: [id])
+
+  isActive      Boolean       @default(true) // false once delisted
+  firstSeenAt   DateTime      @default(now())
+  lastSeenAt    DateTime      @updatedAt
+
+  priceHistory  PriceHistory[]
+
+  @@unique([source, sourceId])
+  @@index([brandId, modelId])
+  @@index([source, isActive])
+}
+
+model PriceHistory {
+  id         String   @id @default(cuid())
+  listingId  String
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  price      Decimal  @db.Decimal(12, 2)
+  recordedAt DateTime @default(now())
+
+  @@index([listingId, recordedAt])
+}
+
+model MarketReport {
+  id          String   @id @default(cuid())
+  title       String
+  periodStart DateTime
+  periodEnd   DateTime
+  content     String // AI-generated markdown report
+  summary     String? // short suggestion/insight summary
+  generatedAt DateTime @default(now())
+}
+
+model ScrapeLog {
+  id            String   @id @default(cuid())
+  source        Source
+  startedAt     DateTime @default(now())
+  finishedAt    DateTime?
+  itemsFound    Int      @default(0)
+  itemsUpserted Int      @default(0)
+  status        String   @default("running") // running | success | failed
+  error         String?
+}
