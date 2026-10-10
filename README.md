@@ -1,63 +1,109 @@
 # Aura Observatory
 
-Auto market observatory backend for Aura Dynamic. Scrapes automobile.tn and
-tayara.tn, stores normalized listings + price history in PostgreSQL, and
-exposes REST APIs for trends, AI-generated market reports, and price/promo
-monitoring.
+Automotive market observatory for the Tunisian used-car market (Aura Dynamic internship project). Tracks listings from **automobile.tn** and **tayara.tn**, stores price history, and surfaces trends, AI-generated market reports, and price/promotion monitoring.
 
-## Setup
+The project is split into two repos:
 
+| Repo | Stack | Role |
+|---|---|---|
+| `aura-observatory` | Node.js, TypeScript, Express, Prisma, PostgreSQL, Playwright | Scraping, data storage, analytics, AI reports, REST API |
+| `aura-frontend` | Laravel (PHP), Blade | Dashboard, listings browser, reports, monitoring UI — calls the Node API over HTTP, no direct DB access |
+
+## Architecture
+
+```
+automobile.tn ─┐
+                ├─> Playwright scrapers ─> PostgreSQL (Prisma) ─> Express API ─> Laravel frontend
+tayara.tn      ─┘                                │
+                                                   └─> Gemini API (AI reports)
+```
+
+The frontend holds no scraping or business logic — it's a thin presentation layer over the backend's REST API, so it could be swapped or duplicated (mobile app, internal tool) without touching the backend.
+
+## Backend (`aura-observatory`)
+
+### Setup
 ```bash
 npm install
 npx playwright install chromium
-
-cp .env.example .env
-# fill in DATABASE_URL and ANTHROPIC_API_KEY
-
-npx prisma migrate dev --name init
+cp .env.example .env   # fill in DATABASE_URL and GEMINI_API_KEY
+npx prisma migrate dev
 npm run dev
 ```
+Runs on `http://localhost:4000`.
 
-Server boots on `http://localhost:4000`. Health check: `GET /health`.
-
-## Task -> module map
-
-| Task                         | Where                                    |
-|-------------------------------|-------------------------------------------|
-| Scrape automobile.tn / tayara | `src/scrapers/automobileTn.ts`, `tayara.ts` |
-| Collect brand/model/price/info| `prisma/schema.prisma` (`Listing` model)  |
-| Price evolution               | `GET /api/trends/price-evolution`         |
-| Competitor comparison         | `GET /api/trends/competitors`             |
-| Market trends overview        | `GET /api/trends/overview`                |
-| AI market reports              | `POST /api/reports/generate`             |
-| AI suggestions                | `POST /api/reports/suggestion`            |
-| Price change monitoring       | `GET /api/monitoring/price-changes`       |
-| Promotion detection           | `GET /api/monitoring/promotions`          |
-
-## Running scrapers manually (before wiring the cron schedule)
-
+### Key scripts
 ```bash
-npm run scrape:automobile
-npm run scrape:tayara
+npm run scrape:automobile   # manual scrape, automobile.tn
+npm run scrape:tayara       # manual scrape, tayara.tn (all 23 governorates)
+npm run merge-brands        # one-off: merge duplicate brand rows (casing/spelling variants)
 ```
 
-## What's stubbed vs. real
+### Data model (Prisma)
+- **Listing** — one row per listing per source; current price, specs, status
+- **PriceHistory** — appended only when a listing's price actually changes
+- **Brand / Model** — normalized reference tables (canonicalized centrally, e.g. "Bmw"/"BMW" → one brand)
+- **Dealership** — for competitor comparison
+- **MarketReport** — stored AI-generated reports
+- **ScrapeLog** — per-run scrape records
 
-- **Real and working once DB is connected**: Prisma schema, upsert/price-history
-  logic, all API routes, analytics math, AI report prompts, monitoring/promotion
-  logic, cron scheduler.
-- **Needs your input**: the CSS selectors inside `extractListingFromCard()` in
-  both scraper files are placeholders (`.listing-card`, `.listing-title`, etc).
-  Open the live site, inspect a real listing card, and swap in the actual
-  selectors. Everything downstream (DB, API, AI reports) works off the
-  normalized `ScrapedListing` shape, so fixing selectors is the only blocker
-  between this skeleton and a fully working pipeline.
+### API endpoints
 
-## Bot-detection notes
+**Listings**
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/listings` | Filterable, paginated search (brand, source, price range) |
+| GET | `/api/listings/:id` | Single listing + full price history |
+| GET | `/api/listings/meta/brands` | Brand/model list for filters |
+| DELETE | `/api/listings/:id` | Remove a listing (cascades price history) |
 
-Both scrapers set a realistic user agent and a delay between page loads
-(`SCRAPE_DELAY_MS`, default 1500ms). If you're still getting blocked:
-- Try `SCRAPE_HEADLESS=false` locally to see what the site actually returns.
-- Consider rotating between a couple of user agents.
-- Add `await page.waitForTimeout(...)` with jitter instead of a fixed delay.
-- As a last resort, a residential proxy service — but try the above first.
+**Trends**
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/trends/overview` | Active count, avg price, top brands, source split |
+| GET | `/api/trends/price-evolution` | Avg price over time (optionally filtered by brand/model) |
+| GET | `/api/trends/competitors` | Price/mileage comparison across dealerships for a model |
+
+**Reports (AI)**
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/reports` | List generated reports |
+| GET | `/api/reports/:id` | Single report content |
+| POST | `/api/reports/generate` | Generate a new report via Gemini |
+| POST | `/api/reports/suggestion` | Pricing suggestions for a brand/model |
+| DELETE | `/api/reports/:id` | Remove a report |
+
+**Monitoring**
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/monitoring/price-changes` | Price changes in the last N days |
+| GET | `/api/monitoring/promotions` | Price drops ≥5% |
+| DELETE | `/api/monitoring/price-changes/:id` | Remove a price-change record |
+
+**Scraping (manual trigger)**
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/scrape/automobile-tn` | Run automobile.tn scrape synchronously (~1–3 min) |
+| POST | `/api/scrape/tayara` | Run full tayara.tn scrape synchronously (~5–15 min) |
+| GET | `/api/scrape/status` | Whether a scrape is currently running |
+
+## Frontend (`aura-frontend`)
+
+### Setup
+```bash
+composer install
+cp .env.example .env   # set AURA_API_BASE_URL=http://localhost:4000
+php artisan serve
+```
+
+### Pages
+- **Dashboard** — stat readouts, price-trend chart, top-brands chart, source-split chart, recent price changes
+- **Listings** — filterable grid, per-source scrape buttons, delete
+- **Listing detail** — full specs, price history, delete
+- **Reports** — list + generate (Gemini) + view
+- **Monitoring** — price changes and promotions
+
+## Known limitations
+- Brand/model recognition on tayara.tn (free-text titles) covers ~80–85% of listings; the rest fall to "Unknown"
+- Image URLs depend on each site's lazy-loading behavior and may occasionally be missing
+- Manual scrape triggers block the HTTP request until finished — no background job queue yet
